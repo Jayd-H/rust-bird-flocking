@@ -4,20 +4,16 @@ extern crate winit;
 extern crate nalgebra;
 extern crate rand;
 extern crate scoped_threadpool;
-
 use nalgebra::{Matrix4, Perspective3, Point3, Vector3};
 use std::time::Instant;
 use std::env;
-
 mod bird;
 mod flock_manager;
 use flock_manager::FlockManager;
-
 //* Scaling test configs */
 const FLOCK_SIZES: [usize; 4] = [200, 1000, 5000, 10000];
 const BENCHMARK_STEPS: usize = 1000;
 const SCALING_TEST_STEPS: usize = 500;
-
 //* Arguments are configured in MAIN */
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -60,7 +56,6 @@ fn main() {
     
     run_interactive_mode(min_bounds, max_bounds);
 }
-
 //* A lot of this was taken directly from the tringles.zip provided */
 fn run_interactive_mode(min_bounds: Vector3<f32>, max_bounds: Vector3<f32>) {
     use glium::{glutin, Surface};

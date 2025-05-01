@@ -6,8 +6,9 @@ use std::time::{Duration, Instant};
 const CELL_SIZE: f32 = 15.0;
 const NUM_FORCE_THREADS: usize = 4;
 const NUM_UPDATE_THREADS: usize = 4;
+const EPSILON: f32 = 1e-6;
+const SEPARATION_RADIUS_FACTOR: f32 = 0.3;
 
-//* Performance metrics structure to track time spent in different parts of the simulation */
 pub struct PerformanceMetrics {
     pub grid_update_time: Duration,
     pub force_calculation_time: Duration,
@@ -58,14 +59,12 @@ impl PerformanceMetrics {
     }
 }
 
-//*  SpatialGrid partitions the 3D space into cells for efficient neighbor lookup */
 struct SpatialGrid {
     cells: Vec<Vec<usize>>,
     grid_dim: usize,
 }
 
 impl SpatialGrid {
-    // Creates a new SpatialGrid covering the simulation boundaries
     fn new(min_bounds: &Vector3<f32>, max_bounds: &Vector3<f32>) -> Self {
         let size_x = max_bounds.x - min_bounds.x;
         let size_y = max_bounds.y - min_bounds.y;
@@ -81,14 +80,12 @@ impl SpatialGrid {
         SpatialGrid { cells, grid_dim }
     }
     
-    // Clears all cells to prepare for a new update
     fn clear(&mut self) {
         for cell in &mut self.cells {
             cell.clear();
         }
     }
     
-    // Adds a bird (by its index) to the correct cell based on its position
     fn add_bird(&mut self, bird_idx: usize, bird: &Bird) {
         let (x_cell, y_cell, z_cell) = self.get_cell_coords(bird);
         let cell_idx = z_cell * self.grid_dim * self.grid_dim + y_cell * self.grid_dim + x_cell;
@@ -97,7 +94,6 @@ impl SpatialGrid {
         }
     }
     
-    // Computes the cell coordinates for a given bird
     fn get_cell_coords(&self, bird: &Bird) -> (usize, usize, usize) {
         let x_cell = (bird.position.x / CELL_SIZE).floor().max(0.0).min((self.grid_dim - 1) as f32) as usize;
         let y_cell = (bird.position.y / CELL_SIZE).floor().max(0.0).min((self.grid_dim - 1) as f32) as usize;
@@ -105,7 +101,6 @@ impl SpatialGrid {
         (x_cell, y_cell, z_cell)
     }
     
-    // Retrieves the indices of birds located in neighboring cells
     fn get_neighbor_indices(&self, bird: &Bird) -> Vec<usize> {
         let (x_cell, y_cell, z_cell) = self.get_cell_coords(bird);
         let mut neighbors = Vec::new();
@@ -134,7 +129,6 @@ impl SpatialGrid {
     }
 }
 
-//* FlockManager handles the birds, flocking behavior, and parallel updates, could be called bird manager realistically */
 pub struct FlockManager {
     pub current_birds: Vec<Bird>,
     pub next_birds: Vec<Bird>,
@@ -151,7 +145,6 @@ pub struct FlockManager {
 }
 
 impl FlockManager {
-    // Creates and initializes a new FlockManager with birds and thread pools
     pub fn new(num_birds: usize, min_bounds: Vector3<f32>, max_bounds: Vector3<f32>) -> Self {
         let mut current_birds = Vec::with_capacity(num_birds);
         for _ in 0..num_birds {
@@ -165,9 +158,9 @@ impl FlockManager {
             next_birds,
             min_bounds,
             max_bounds,
-            separation_weight: 1.5,
+            separation_weight: 3.0,
             alignment_weight: 1.0,
-            cohesion_weight: 1.0,
+            cohesion_weight: 0.5,
             dominant_forces,
             spatial_grid: SpatialGrid::new(&min_bounds, &max_bounds),
             force_pool: Pool::new(NUM_FORCE_THREADS as u32),
@@ -176,7 +169,6 @@ impl FlockManager {
         }
     }
     
-    // Updates the spatial grid by placing each bird into its corresponding cell
     fn update_spatial_grid(&mut self) {
         self.spatial_grid.clear();
         for (idx, bird) in self.current_birds.iter().enumerate() {
@@ -184,134 +176,229 @@ impl FlockManager {
         }
     }
     
-    // Performs a simulation update with performance tracking
+    fn calculate_wrapped_distance(pos1: &Vector3<f32>, pos2: &Vector3<f32>, min_bounds: &Vector3<f32>, max_bounds: &Vector3<f32>) -> Vector3<f32> {
+        let size_x = max_bounds.x - min_bounds.x;
+        let size_y = max_bounds.y - min_bounds.y;
+        let size_z = max_bounds.z - min_bounds.z;
+        
+        let dx = pos1.x - pos2.x;
+        let dy = pos1.y - pos2.y;
+        let dz = pos1.z - pos2.z;
+        
+        let dx_wrap = dx - size_x * (dx / (size_x * 0.5)).round();
+        let dy_wrap = dy - size_y * (dy / (size_y * 0.5)).round();
+        let dz_wrap = dz - size_z * (dz / (size_z * 0.5)).round();
+        
+        Vector3::new(dx_wrap, dy_wrap, dz_wrap)
+    }
+    
+    fn calculate_forces(
+        bird_index: usize,
+        birds: &[Bird],
+        neighbor_indices: &[usize],
+        min_bounds: &Vector3<f32>,
+        max_bounds: &Vector3<f32>,
+        separation_weight: f32,
+        alignment_weight: f32,
+        cohesion_weight: f32,
+    ) -> (Vector3<f32>, Vector3<f32>, Vector3<f32>, usize) {
+        let bird = &birds[bird_index];
+        
+        // Calculate separation force
+        let mut separation_force = Vector3::zeros();
+        for &j in neighbor_indices {
+            if bird_index == j || j >= birds.len() {
+                continue;
+            }
+            
+            let other_bird = &birds[j];
+            let wrapped_diff = Self::calculate_wrapped_distance(&bird.position, &other_bird.position, min_bounds, max_bounds);
+            let dist_sq = wrapped_diff.magnitude_squared();
+            
+            if dist_sq > EPSILON && dist_sq < (bird.perception_radius * SEPARATION_RADIUS_FACTOR) * (bird.perception_radius * SEPARATION_RADIUS_FACTOR) {
+                separation_force += wrapped_diff.normalize() * (1.0 / dist_sq);
+            }
+        }
+        
+        // Calculate alignment force
+        let mut average_velocity = Vector3::zeros();
+        let mut cohesion_center = Vector3::zeros();
+        let mut neighboring_birds_count = 0;
+        
+        for &j in neighbor_indices {
+            if bird_index == j || j >= birds.len() {
+                continue;
+            }
+            
+            let other_bird = &birds[j];
+            let wrapped_diff = Self::calculate_wrapped_distance(&bird.position, &other_bird.position, min_bounds, max_bounds);
+            let dist_sq = wrapped_diff.magnitude_squared();
+            
+            if dist_sq < bird.perception_radius * bird.perception_radius {
+                // For alignment
+                average_velocity += other_bird.velocity;
+                
+                // For cohesion - calculate the wrapped position of the other bird
+                let other_pos = bird.position - wrapped_diff;
+                cohesion_center += other_pos;
+                
+                neighboring_birds_count += 1;
+            }
+        }
+        
+        // Finalize alignment force
+        let alignment_force = if neighboring_birds_count > 0 {
+            average_velocity /= neighboring_birds_count as f32;
+            let mut force = average_velocity - bird.velocity;
+            
+            if force.magnitude() > bird.max_force {
+                force = force.normalize() * bird.max_force;
+            }
+            force
+        } else {
+            Vector3::zeros()
+        };
+        
+        // Finalize cohesion force
+        let cohesion_force = if neighboring_birds_count > 0 {
+            cohesion_center /= neighboring_birds_count as f32;
+            let desired_velocity = cohesion_center - bird.position;
+            let mut force = desired_velocity;
+            
+            if force.magnitude() > bird.max_force {
+                force = force.normalize() * bird.max_force;
+            }
+            force
+        } else {
+            Vector3::zeros()
+        };
+        
+        // Apply weights
+        let sep_force = separation_force * separation_weight;
+        let align_force = alignment_force * alignment_weight;
+        let coh_force = cohesion_force * cohesion_weight;
+        
+        // Determine dominant force
+        let sep_mag = sep_force.magnitude();
+        let align_mag = align_force.magnitude();
+        let coh_mag = coh_force.magnitude();
+        
+        let dominant_force = if sep_mag > align_mag && sep_mag > coh_mag {
+            0
+        } else if align_mag > sep_mag && align_mag > coh_mag {
+            1
+        } else {
+            2
+        };
+        
+        (sep_force, align_force, coh_force, dominant_force)
+    }
+    
     pub fn update(&mut self, dt: f32) {
         let start_time = Instant::now();
         
-        // Update spatial grid
         let grid_start = Instant::now();
         self.update_spatial_grid();
         self.performance.grid_update_time += grid_start.elapsed();
         
-        let mut thread_dominant_forces: Vec<Vec<(usize, usize)>> = vec![Vec::new(); NUM_FORCE_THREADS];
-        
-        // Calculate forces
         let force_start = Instant::now();
-        {
-            let current_birds = &self.current_birds;
-            let spatial_grid = &self.spatial_grid;
-            let separation_weight = self.separation_weight;
-            let alignment_weight = self.alignment_weight;
-            let cohesion_weight = self.cohesion_weight;
-            let next_birds_slice = self.next_birds.as_mut_slice();
-            let chunk_size = (current_birds.len() + NUM_FORCE_THREADS - 1) / NUM_FORCE_THREADS;
-            
-            self.force_pool.scoped(|scope| {
-                for ((chunk_idx, next_birds_chunk), thread_forces) in 
-                    next_birds_slice.chunks_mut(chunk_size).enumerate().zip(thread_dominant_forces.iter_mut())
-                {
-                    let start_idx = chunk_idx * chunk_size;
-                    scope.execute(move || {
-                        for (i, next_bird) in next_birds_chunk.iter_mut().enumerate() {
-                            let global_idx = start_idx + i;
-                            if global_idx >= current_birds.len() {
-                                continue;
-                            }
-                            
-                            let bird = &current_birds[global_idx];
-                            *next_bird = *bird;
-                            let neighbors = spatial_grid.get_neighbor_indices(bird);
-                            let mut separation_force = Vector3::zeros();
-                            let mut alignment_force = Vector3::zeros();
-                            let mut cohesion_force = Vector3::zeros();
-                            let mut neighboring_birds_count = 0;
-                            let mut center_of_mass = Vector3::zeros();
-                            let mut average_velocity = Vector3::zeros();
-                            
-                            for &j in &neighbors {
-                                if global_idx == j {
-                                    continue;
-                                }
-                                let other_bird = &current_birds[j];
-                                let distance = (bird.position - other_bird.position).magnitude();
-                                if distance < bird.perception_radius {
-                                    separation_force += (bird.position - other_bird.position).normalize();
-                                    average_velocity += other_bird.velocity;
-                                    center_of_mass += other_bird.position;
-                                    neighboring_birds_count += 1;
-                                }
-                            }
-                            
-                            if neighboring_birds_count > 0 {
-                                average_velocity /= neighboring_birds_count as f32;
-                                alignment_force = average_velocity - bird.velocity;
-                                if alignment_force.magnitude() > bird.max_force {
-                                    alignment_force = alignment_force.normalize() * bird.max_force;
-                                }
-                                
-                                center_of_mass /= neighboring_birds_count as f32;
-                                let desired_velocity = center_of_mass - bird.position;
-                                cohesion_force = desired_velocity - bird.velocity;
-                                if cohesion_force.magnitude() > bird.max_force {
-                                    cohesion_force = cohesion_force.normalize() * bird.max_force;
-                                }
-                            }
-                            
-                            let sep_force = separation_force * separation_weight;
-                            let align_force = alignment_force * alignment_weight;
-                            let coh_force = cohesion_force * cohesion_weight;
-                            
-                            let sep_mag = sep_force.magnitude();
-                            let align_mag = align_force.magnitude();
-                            let coh_mag = coh_force.magnitude();
-                            let dominant_force = if sep_mag > align_mag && sep_mag > coh_mag {
-                                0
-                            } else if align_mag > sep_mag && align_mag > coh_mag {
-                                1
-                            } else {
-                                2
-                            };
-                            
-                            thread_forces.push((global_idx, dominant_force));
-                            next_bird.apply_force(sep_force);
-                            next_bird.apply_force(align_force);
-                            next_bird.apply_force(coh_force);
-                        }
-                    });
-                }
-            });
-        }
-        self.performance.force_calculation_time += force_start.elapsed();
         
-        for thread_forces in thread_dominant_forces {
-            for (idx, force) in thread_forces {
-                if idx < self.dominant_forces.len() {
-                    self.dominant_forces[idx] = force;
+        // Pre-collect all neighbor indices
+        let birds_with_neighbors: Vec<Vec<usize>> = self.current_birds.iter()
+            .map(|bird| self.spatial_grid.get_neighbor_indices(bird))
+            .collect();
+            
+        // Create thread-safe copies of shared data
+        let birds = self.current_birds.clone();
+        let min_bounds = self.min_bounds;
+        let max_bounds = self.max_bounds;
+        let separation_weight = self.separation_weight;
+        let alignment_weight = self.alignment_weight;
+        let cohesion_weight = self.cohesion_weight;
+        
+        let mut thread_forces: Vec<Vec<(usize, Vector3<f32>, Vector3<f32>, Vector3<f32>, usize)>> = 
+            vec![Vec::new(); NUM_FORCE_THREADS];
+        
+        let chunk_size = (self.current_birds.len() + NUM_FORCE_THREADS - 1) / NUM_FORCE_THREADS;
+        
+        self.force_pool.scoped(|scope| {
+            for (chunk_idx, thread_result) in thread_forces.iter_mut().enumerate() {
+                let start_idx = chunk_idx * chunk_size;
+                let end_idx = (start_idx + chunk_size).min(birds.len());
+                
+                // Create thread-local copies
+                let birds_copy = birds.clone();
+                let birds_with_neighbors_copy = birds_with_neighbors.clone();
+                let min_bounds_copy = min_bounds;
+                let max_bounds_copy = max_bounds;
+                let sep_weight_copy = separation_weight;
+                let align_weight_copy = alignment_weight;
+                let cohesion_weight_copy = cohesion_weight;
+                
+                scope.execute(move || {
+                    let mut local_results = Vec::new();
+                    
+                    for bird_idx in start_idx..end_idx {
+                        let (sep, align, coh, dominant) = Self::calculate_forces(
+                            bird_idx,
+                            &birds_copy,
+                            &birds_with_neighbors_copy[bird_idx],
+                            &min_bounds_copy,
+                            &max_bounds_copy,
+                            sep_weight_copy,
+                            align_weight_copy,
+                            cohesion_weight_copy
+                        );
+                        
+                        local_results.push((bird_idx, sep, align, coh, dominant));
+                    }
+                    
+                    *thread_result = local_results;
+                });
+            }
+        });
+        
+        // Apply the forces to next_birds 
+        for thread_result in &thread_forces {
+            for &(bird_idx, sep, align, coh, dominant) in thread_result {
+                if bird_idx < self.next_birds.len() {
+                    self.next_birds[bird_idx] = self.current_birds[bird_idx];
+                    self.next_birds[bird_idx].apply_force(sep);
+                    self.next_birds[bird_idx].apply_force(align);
+                    self.next_birds[bird_idx].apply_force(coh);
+                    self.dominant_forces[bird_idx] = dominant;
                 }
             }
         }
         
-        // Update positions
+        self.performance.force_calculation_time += force_start.elapsed();
+        
         let update_start = Instant::now();
+        
+        let next_birds_len = self.next_birds.len();
+        let min_bounds = self.min_bounds;
+        let max_bounds = self.max_bounds;
+        let chunk_size = (next_birds_len + NUM_UPDATE_THREADS - 1) / NUM_UPDATE_THREADS;
+        
+        // Update positions in parallel
         {
-            let next_birds_len = self.next_birds.len();
-            let chunk_size = (next_birds_len + NUM_UPDATE_THREADS - 1) / NUM_UPDATE_THREADS;
-            
             let next_birds_slice = self.next_birds.as_mut_slice();
-            let min_bounds = self.min_bounds;
-            let max_bounds = self.max_bounds;
             
             self.update_pool.scoped(|scope| {
                 for next_birds_chunk in next_birds_slice.chunks_mut(chunk_size) {
+                    let min_bounds_copy = min_bounds;
+                    let max_bounds_copy = max_bounds;
+                    
                     scope.execute(move || {
-                        for bird in next_birds_chunk.iter_mut() {
+                        for bird in next_birds_chunk {
                             bird.update(dt);
-                            bird.apply_boundaries(&min_bounds, &max_bounds);
+                            bird.apply_boundaries(&min_bounds_copy, &max_bounds_copy);
                         }
                     });
                 }
             });
         }
+        
         self.performance.position_update_time += update_start.elapsed();
         
         std::mem::swap(&mut self.current_birds, &mut self.next_birds);
@@ -320,7 +407,6 @@ impl FlockManager {
         self.performance.total_time += start_time.elapsed();
     }
     
-    // Runs the simulation for a fixed number of steps without rendering
     pub fn run_benchmark(&mut self, steps: usize, dt: f32) {
         self.performance.reset();
         println!("Running benchmark for {} steps...", steps);
@@ -336,17 +422,14 @@ impl FlockManager {
         self.performance.report();
     }
     
-    // Returns the dominant force index for the bird at the given index
     pub fn get_dominant_force(&self, bird_index: usize) -> usize {
         self.dominant_forces[bird_index]
     }
     
-    // Returns a reference to the current bird vector
     pub fn get_birds(&self) -> &Vec<Bird> {
         &self.current_birds
     }
     
-    // Returns the number of birds in the simulation
     pub fn get_bird_count(&self) -> usize {
         self.current_birds.len()
     }
