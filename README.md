@@ -13,7 +13,10 @@ cargo run
 **For raw computational benchmark of steps without graphics:**
 
 ```
-cargo run -- benchmark 1000
+cargo run -- benchmark                   # Default: 200 birds, 1000 steps
+cargo run -- benchmark 500               # 500 birds, 1000 steps
+cargo run -- benchmark 500 2000          # 500 birds, 2000 steps
+cargo run -- benchmark 1000 500 --threads 8  # 1000 birds, 500 steps, 8 threads
 ```
 
 **For scaling analysis across different flock sizes:**
@@ -27,7 +30,8 @@ cargo run -- scaling
 You can control the number of threads used for force calculation and position updates:
 
 ```
-cargo run -- --force-threads <number> --update-threads <number>
+cargo run -- --threads <number>           # Set both thread pools to same value
+cargo run -- --force-threads <number> --update-threads <number>  # Set separately
 ```
 
 These parameters can be combined with any of the basic commands.
@@ -37,7 +41,8 @@ These parameters can be combined with any of the basic commands.
 **Visualize with custom thread counts:**
 
 ```
-cargo run -- --force-threads 8 --update-threads 4
+cargo run -- --threads 6               # Use 6 threads for both pools
+cargo run -- --force-threads 8 --update-threads 4  # Different thread counts
 ```
 
 **Run benchmark with custom thread configuration:**
@@ -58,23 +63,24 @@ To test how well the simulation scales with different thread counts:
 
 ```
 # Test with single thread (baseline)
-cargo run -- benchmark 1000 --force-threads 1 --update-threads 1
+cargo run -- benchmark 1000 --threads 1
 
 # Test with 2 threads
-cargo run -- benchmark 1000 --force-threads 2 --update-threads 2
+cargo run -- benchmark 1000 --threads 2
 
 # Test with 4 threads
-cargo run -- benchmark 1000 --force-threads 4 --update-threads 4
+cargo run -- benchmark 1000 --threads 4
 
 # Test with 8 threads
-cargo run -- benchmark 1000 --force-threads 8 --update-threads 8
+cargo run -- benchmark 1000 --threads 8
 ```
 
 Compare the performance reports to observe the scaling efficiency.
 
 ## Parameters
 
+- `--threads`: Set both force and update thread pools to the same value
 - `--force-threads`: Number of threads used for force calculations (separation, alignment, cohesion)
 - `--update-threads`: Number of threads used for position updates
-- `benchmark <steps>`: Run a performance benchmark for the specified number of steps
+- `benchmark [birds] [steps]`: Run a performance benchmark with optional bird count and step count
 - `scaling`: Run benchmarks across different flock sizes to test scaling
