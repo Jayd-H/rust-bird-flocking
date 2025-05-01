@@ -3,7 +3,7 @@ use nalgebra::Vector3;
 use scoped_threadpool::Pool;
 use std::time::{Duration, Instant};
 
-const CELL_SIZE: f32 = 15.0;
+const CELL_SIZE: f32 = 30.0;
 const NUM_FORCE_THREADS: usize = 4;
 const NUM_UPDATE_THREADS: usize = 4;
 const EPSILON: f32 = 1e-6;
@@ -72,6 +72,8 @@ impl PerformanceMetrics {
 struct SpatialGrid {
     cells: Vec<Vec<usize>>,
     grid_dim: usize,
+    min_bounds: Vector3<f32>,
+    cell_size: f32,
 }
 
 impl SpatialGrid {
@@ -87,7 +89,12 @@ impl SpatialGrid {
             cells.push(Vec::new());
         }
 
-        SpatialGrid { cells, grid_dim }
+        SpatialGrid {
+            cells,
+            grid_dim,
+            min_bounds: *min_bounds,
+            cell_size: CELL_SIZE,
+        }
     }
 
     fn clear(&mut self) {
@@ -105,49 +112,31 @@ impl SpatialGrid {
     }
 
     fn get_cell_coords(&self, bird: &Bird) -> (usize, usize, usize) {
-        let x_cell = (bird.position.x / CELL_SIZE)
+        let x_cell = ((bird.position.x - self.min_bounds.x) / self.cell_size)
             .floor()
             .max(0.0)
             .min((self.grid_dim - 1) as f32) as usize;
-        let y_cell = (bird.position.y / CELL_SIZE)
+        let y_cell = ((bird.position.y - self.min_bounds.y) / self.cell_size)
             .floor()
             .max(0.0)
             .min((self.grid_dim - 1) as f32) as usize;
-        let z_cell = (bird.position.z / CELL_SIZE)
+        let z_cell = ((bird.position.z - self.min_bounds.z) / self.cell_size)
             .floor()
             .max(0.0)
             .min((self.grid_dim - 1) as f32) as usize;
         (x_cell, y_cell, z_cell)
     }
 
+    // Since cell size is larger than perception radius, we only need to check the current cell
     fn get_neighbor_indices(&self, bird: &Bird) -> Vec<usize> {
         let (x_cell, y_cell, z_cell) = self.get_cell_coords(bird);
-        let mut neighbors = Vec::new();
-        for dz in -1..=1 {
-            for dy in -1..=1 {
-                for dx in -1..=1 {
-                    let nx = x_cell as isize + dx;
-                    let ny = y_cell as isize + dy;
-                    let nz = z_cell as isize + dz;
-                    if nx < 0
-                        || ny < 0
-                        || nz < 0
-                        || nx >= self.grid_dim as isize
-                        || ny >= self.grid_dim as isize
-                        || nz >= self.grid_dim as isize
-                    {
-                        continue;
-                    }
-                    let cell_idx = (nz as usize) * self.grid_dim * self.grid_dim
-                        + (ny as usize) * self.grid_dim
-                        + (nx as usize);
-                    if cell_idx < self.cells.len() {
-                        neighbors.extend(&self.cells[cell_idx]);
-                    }
-                }
-            }
+        let cell_idx = z_cell * self.grid_dim * self.grid_dim + y_cell * self.grid_dim + x_cell;
+
+        if cell_idx < self.cells.len() {
+            self.cells[cell_idx].clone()
+        } else {
+            Vec::new()
         }
-        neighbors
     }
 }
 
@@ -239,6 +228,10 @@ impl FlockManager {
 
         // Calculate separation force
         let mut separation_force = Vector3::zeros();
+        let mut average_velocity = Vector3::zeros();
+        let mut cohesion_center = Vector3::zeros();
+        let mut neighboring_birds_count = 0;
+
         for &j in neighbor_indices {
             if bird_index == j || j >= birds.len() {
                 continue;
@@ -260,26 +253,6 @@ impl FlockManager {
             {
                 separation_force += wrapped_diff.normalize() * (1.0 / dist_sq);
             }
-        }
-
-        // Calculate alignment force
-        let mut average_velocity = Vector3::zeros();
-        let mut cohesion_center = Vector3::zeros();
-        let mut neighboring_birds_count = 0;
-
-        for &j in neighbor_indices {
-            if bird_index == j || j >= birds.len() {
-                continue;
-            }
-
-            let other_bird = &birds[j];
-            let wrapped_diff = Self::calculate_wrapped_distance(
-                &bird.position,
-                &other_bird.position,
-                min_bounds,
-                max_bounds,
-            );
-            let dist_sq = wrapped_diff.magnitude_squared();
 
             if dist_sq < bird.perception_radius * bird.perception_radius {
                 // For alignment
