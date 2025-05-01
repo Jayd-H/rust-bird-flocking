@@ -11,7 +11,7 @@ mod bird;
 mod flock_manager;
 use flock_manager::FlockManager;
 //* Scaling test configs */
-const FLOCK_SIZES: [usize; 4] = [200, 1000, 5000, 10000];
+const FLOCK_SIZES: [usize; 4] = [100, 500, 1000, 5000];
 const BENCHMARK_STEPS: usize = 1000;
 const SCALING_TEST_STEPS: usize = 500;
 //* Arguments are configured in MAIN */
