@@ -103,33 +103,70 @@ impl SpatialGrid {
         }
     }
 
-    fn add_bird(&mut self, bird_idx: usize, bird: &Bird) {
-        let (x_cell, y_cell, z_cell) = self.get_cell_coords(bird);
-        let cell_idx = z_cell * self.grid_dim * self.grid_dim + y_cell * self.grid_dim + x_cell;
-        if cell_idx < self.cells.len() {
-            self.cells[cell_idx].push(bird_idx);
-        }
-    }
-
-    fn get_cell_coords(&self, bird: &Bird) -> (usize, usize, usize) {
-        let x_cell = ((bird.position.x - self.min_bounds.x) / self.cell_size)
+    fn get_cell_coords(&self, position: &Vector3<f32>) -> (usize, usize, usize) {
+        let x_cell = ((position.x - self.min_bounds.x) / self.cell_size)
             .floor()
             .max(0.0)
             .min((self.grid_dim - 1) as f32) as usize;
-        let y_cell = ((bird.position.y - self.min_bounds.y) / self.cell_size)
+        let y_cell = ((position.y - self.min_bounds.y) / self.cell_size)
             .floor()
             .max(0.0)
             .min((self.grid_dim - 1) as f32) as usize;
-        let z_cell = ((bird.position.z - self.min_bounds.z) / self.cell_size)
+        let z_cell = ((position.z - self.min_bounds.z) / self.cell_size)
             .floor()
             .max(0.0)
             .min((self.grid_dim - 1) as f32) as usize;
         (x_cell, y_cell, z_cell)
     }
 
-    // Since cell size is larger than perception radius, we only need to check the current cell
+    fn get_overlapping_cells(&self, bird: &Bird) -> Vec<(usize, usize, usize)> {
+        let perception_radius = bird.perception_radius;
+
+        // Create a position at the minimum corner of the bird's perception radius
+        let min_pos = Vector3::new(
+            bird.position.x - perception_radius,
+            bird.position.y - perception_radius,
+            bird.position.z - perception_radius,
+        );
+
+        // Create a position at the maximum corner of the bird's perception radius
+        let max_pos = Vector3::new(
+            bird.position.x + perception_radius,
+            bird.position.y + perception_radius,
+            bird.position.z + perception_radius,
+        );
+
+        // Get the cell coordinates for the min and max positions
+        let (min_x, min_y, min_z) = self.get_cell_coords(&min_pos);
+        let (max_x, max_y, max_z) = self.get_cell_coords(&max_pos);
+
+        // Generate all cell coordinates within this range
+        let mut overlapping_cells = Vec::new();
+        for x in min_x..=max_x {
+            for y in min_y..=max_y {
+                for z in min_z..=max_z {
+                    if x < self.grid_dim && y < self.grid_dim && z < self.grid_dim {
+                        overlapping_cells.push((x, y, z));
+                    }
+                }
+            }
+        }
+
+        overlapping_cells
+    }
+
+    fn add_bird(&mut self, bird_idx: usize, bird: &Bird) {
+        // Add bird to all cells its perception radius overlaps
+        for (x_cell, y_cell, z_cell) in self.get_overlapping_cells(bird) {
+            let cell_idx = z_cell * self.grid_dim * self.grid_dim + y_cell * self.grid_dim + x_cell;
+            if cell_idx < self.cells.len() {
+                self.cells[cell_idx].push(bird_idx);
+            }
+        }
+    }
+
     fn get_neighbor_indices(&self, bird: &Bird) -> Vec<usize> {
-        let (x_cell, y_cell, z_cell) = self.get_cell_coords(bird);
+        let (x_cell, y_cell, z_cell) = self.get_cell_coords(&bird.position);
         let cell_idx = z_cell * self.grid_dim * self.grid_dim + y_cell * self.grid_dim + x_cell;
 
         if cell_idx < self.cells.len() {
