@@ -21,29 +21,59 @@ fn main() {
     // Default configuration
     let min_bounds = Vector3::new(-50.0, -50.0, -50.0);
     let max_bounds = Vector3::new(50.0, 50.0, 50.0);
+    let mut force_threads = 4;
+    let mut update_threads = 4;
+    
+    // Parse thread counts from arguments
+    let mut i = 1;
+while i < args.len() {
+    if args[i] == "--threads" && i + 1 < args.len() {
+        if let Ok(count) = args[i + 1].parse() {
+            force_threads = count;
+            update_threads = count;
+            i += 2;
+            continue;
+        }
+    } else if args[i] == "--force-threads" && i + 1 < args.len() {
+        if let Ok(count) = args[i + 1].parse() {
+            force_threads = count;
+            i += 2;
+            continue;
+        }
+    } else if args[i] == "--update-threads" && i + 1 < args.len() {
+        if let Ok(count) = args[i + 1].parse() {
+            update_threads = count;
+            i += 2;
+            continue;
+        }
+    }
+    i += 1;
+}
     
     // Parse command line arguments to determine mode
     if args.len() > 1 {
         match args[1].as_str() {
             "benchmark" => {
                 // Time-to-solution benchmark (no graphics)
-                let num_birds = if args.len() > 2 {
+                let num_birds = if args.len() > 2 && !args[2].starts_with("--") {
                     args[2].parse().unwrap_or(200)
                 } else {
                     200
                 };
                 
-                println!("Running performance benchmark with {} birds", num_birds);
-                let mut flock = FlockManager::new(num_birds, min_bounds, max_bounds);
+                println!("Running performance benchmark with {} birds (force threads: {}, update threads: {})", 
+                         num_birds, force_threads, update_threads);
+                let mut flock = FlockManager::new(num_birds, min_bounds, max_bounds, force_threads, update_threads);
                 flock.run_benchmark(BENCHMARK_STEPS, 0.016);
                 return;
             },
             "scaling" => {
                 // Scaling test across different flock sizes
-                println!("Running scaling test with various flock sizes");
+                println!("Running scaling test with various flock sizes (force threads: {}, update threads: {})", 
+                         force_threads, update_threads);
                 for &size in &FLOCK_SIZES {
                     println!("\n=== Testing with {} birds ===", size);
-                    let mut flock = FlockManager::new(size, min_bounds, max_bounds);
+                    let mut flock = FlockManager::new(size, min_bounds, max_bounds, force_threads, update_threads);
                     flock.run_benchmark(SCALING_TEST_STEPS, 0.016);
                 }
                 return;
@@ -54,10 +84,11 @@ fn main() {
         }
     }
     
-    run_interactive_mode(min_bounds, max_bounds);
+    run_interactive_mode(min_bounds, max_bounds, force_threads, update_threads);
 }
+
 //* A lot of this was taken directly from the tringles.zip provided */
-fn run_interactive_mode(min_bounds: Vector3<f32>, max_bounds: Vector3<f32>) {
+fn run_interactive_mode(min_bounds: Vector3<f32>, max_bounds: Vector3<f32>, force_threads: usize, update_threads: usize) {
     use glium::{glutin, Surface};
     
     let event_loop = winit::event_loop::EventLoop::new();
@@ -113,7 +144,7 @@ fn run_interactive_mode(min_bounds: Vector3<f32>, max_bounds: Vector3<f32>) {
     let program = glium::Program::from_source(&display, vertex_shader_src, fragment_shader_src, None).unwrap();
     
     let num_birds = 200;
-    let mut flock = FlockManager::new(num_birds, min_bounds, max_bounds);
+    let mut flock = FlockManager::new(num_birds, min_bounds, max_bounds, force_threads, update_threads);
     
     //* Performance tracking variables */
     let mut last_update = Instant::now();

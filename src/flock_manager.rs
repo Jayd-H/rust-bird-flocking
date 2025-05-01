@@ -145,7 +145,7 @@ pub struct FlockManager {
 }
 
 impl FlockManager {
-    pub fn new(num_birds: usize, min_bounds: Vector3<f32>, max_bounds: Vector3<f32>) -> Self {
+    pub fn new(num_birds: usize, min_bounds: Vector3<f32>, max_bounds: Vector3<f32>, force_threads: usize, update_threads: usize) -> Self {
         let mut current_birds = Vec::with_capacity(num_birds);
         for _ in 0..num_birds {
             current_birds.push(Bird::new(&min_bounds, &max_bounds));
@@ -163,8 +163,8 @@ impl FlockManager {
             cohesion_weight: 0.5,
             dominant_forces,
             spatial_grid: SpatialGrid::new(&min_bounds, &max_bounds),
-            force_pool: Pool::new(NUM_FORCE_THREADS as u32),
-            update_pool: Pool::new(NUM_UPDATE_THREADS as u32),
+            force_pool: Pool::new(force_threads as u32),
+            update_pool: Pool::new(update_threads as u32),
             performance: PerformanceMetrics::new(),
         }
     }
