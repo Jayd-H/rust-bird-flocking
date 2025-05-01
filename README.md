@@ -2,6 +2,14 @@
 
 This simulator demonstrates bird flocking behavior implemented in Rust using parallel processing.
 
+When running the visual simulation, bird colour dictates what their strongest force is:
+
+Green = **Cohesion**
+
+Red = **Separation**
+
+Blue = **Alignment**
+
 ## Basic Commands
 
 **For regular visualization with FPS tracking:**
