@@ -1,3 +1,5 @@
+//* Bird Flocking Simulation */
+//* APRIL/MAY 2025 - Jayden Holdsworth */
 #[macro_use]
 extern crate glium;
 extern crate nalgebra;
@@ -10,19 +12,51 @@ use std::time::Instant;
 mod bird;
 mod flock_manager;
 use flock_manager::FlockManager;
-//* Scaling test configs */
+
+//* SIMULATION CONFIG */
 const FLOCK_SIZES: [usize; 4] = [100, 500, 1000, 5000];
 const BENCHMARK_STEPS: usize = 1000;
 const SCALING_TEST_STEPS: usize = 500;
-//* Arguments are configured in MAIN */
+const SIMULATION_TIMESTEP: f32 = 0.016; // 60 FPS equivalent
+
+// Default values
+const DEFAULT_NUM_BIRDS: usize = 1000;
+const DEFAULT_FORCE_THREADS: usize = 4;
+const DEFAULT_UPDATE_THREADS: usize = 4;
+const DEFAULT_MIN_BOUNDS: Vector3<f32> = Vector3::new(-50.0, -50.0, -50.0);
+const DEFAULT_MAX_BOUNDS: Vector3<f32> = Vector3::new(50.0, 50.0, 50.0);
+
+//* VISUALIZATION CONFIG */
+const WINDOW_WIDTH: f32 = 1024.0;
+const WINDOW_HEIGHT: f32 = 768.0;
+const WINDOW_TITLE: &str = "Bird Flocking Simulation";
+const BIRD_COLORS: [[f32; 3]; 4] = [
+    [0.9, 0.2, 0.2], // Separation (red)
+    [0.2, 0.9, 0.2], // Alignment (green)
+    [0.2, 0.2, 0.9], // Cohesion (blue)
+    [0.7, 0.7, 0.7], // Default (gray)
+];
+const BACKGROUND_COLOR: (f32, f32, f32, f32) = (0.1, 0.1, 0.15, 1.0);
+
+//* CAMERA CONFIG */
+const CAMERA_POSITION: Vector3<f32> = Vector3::new(0.0, 0.0, 120.0);
+const CAMERA_TARGET: Vector3<f32> = Vector3::new(0.0, 0.0, 0.0);
+const CAMERA_UP: Vector3<f32> = Vector3::new(0.0, 1.0, 0.0);
+const CAMERA_FOV: f32 = std::f32::consts::FRAC_PI_4;
+const CAMERA_NEAR: f32 = 0.1;
+const CAMERA_FAR: f32 = 1000.0;
+
+//* PERFORMANCE MONITORING */
+const REPORT_INTERVAL_SECS: u64 = 5;
+
 fn main() {
     let args: Vec<String> = env::args().collect();
 
     // Default configuration
-    let min_bounds = Vector3::new(-50.0, -50.0, -50.0);
-    let max_bounds = Vector3::new(50.0, 50.0, 50.0);
-    let mut force_threads = 4;
-    let mut update_threads = 4;
+    let min_bounds = DEFAULT_MIN_BOUNDS;
+    let max_bounds = DEFAULT_MAX_BOUNDS;
+    let mut force_threads = DEFAULT_FORCE_THREADS;
+    let mut update_threads = DEFAULT_UPDATE_THREADS;
 
     // Parse thread counts from arguments
     let mut i = 1;
@@ -54,9 +88,8 @@ fn main() {
     if args.len() > 1 {
         match args[1].as_str() {
             "benchmark" => {
-                // Time-to-solution benchmark (no graphics)
-                let mut num_birds = 200; // Default value
-                let mut benchmark_steps = BENCHMARK_STEPS; // Default from constant
+                let mut num_birds = DEFAULT_NUM_BIRDS;
+                let mut benchmark_steps = BENCHMARK_STEPS;
 
                 // Check if birds count is specified
                 if args.len() > 2 && !args[2].starts_with("--") {
@@ -73,7 +106,7 @@ fn main() {
                 }
 
                 println!("Running performance benchmark with {} birds for {} steps (force threads: {}, update threads: {})", 
-             num_birds, benchmark_steps, force_threads, update_threads);
+                    num_birds, benchmark_steps, force_threads, update_threads);
                 let mut flock = FlockManager::new(
                     num_birds,
                     min_bounds,
@@ -81,13 +114,13 @@ fn main() {
                     force_threads,
                     update_threads,
                 );
-                flock.run_benchmark(benchmark_steps, 0.016);
+                flock.run_benchmark(benchmark_steps, SIMULATION_TIMESTEP);
                 return;
             }
             "scaling" => {
                 // Scaling test across different flock sizes
                 println!("Running scaling test with various flock sizes (force threads: {}, update threads: {})", 
-                         force_threads, update_threads);
+                    force_threads, update_threads);
                 for &size in &FLOCK_SIZES {
                     println!("\n=== Testing with {} birds ===", size);
                     let mut flock = FlockManager::new(
@@ -97,20 +130,17 @@ fn main() {
                         force_threads,
                         update_threads,
                     );
-                    flock.run_benchmark(SCALING_TEST_STEPS, 0.016);
+                    flock.run_benchmark(SCALING_TEST_STEPS, SIMULATION_TIMESTEP);
                 }
                 return;
             }
-            _ => {
-                // Interactive mode is the default
-            }
+            _ => {}
         }
     }
 
     run_interactive_mode(min_bounds, max_bounds, force_threads, update_threads);
 }
 
-//* A lot of this was taken directly from the tringles.zip provided */
 fn run_interactive_mode(
     min_bounds: Vector3<f32>,
     max_bounds: Vector3<f32>,
@@ -121,8 +151,8 @@ fn run_interactive_mode(
 
     let event_loop = winit::event_loop::EventLoop::new();
     let wb = winit::window::WindowBuilder::new()
-        .with_inner_size(winit::dpi::LogicalSize::new(1024.0, 768.0))
-        .with_title("Bird Flocking Simulation");
+        .with_inner_size(winit::dpi::LogicalSize::new(WINDOW_WIDTH, WINDOW_HEIGHT))
+        .with_title(WINDOW_TITLE);
     let cb = glutin::ContextBuilder::new().with_depth_buffer(24);
     let display = glium::Display::new(wb, cb, &event_loop).unwrap();
 
@@ -179,9 +209,8 @@ fn run_interactive_mode(
         glium::Program::from_source(&display, vertex_shader_src, fragment_shader_src, None)
             .unwrap();
 
-    let num_birds = 200;
     let mut flock = FlockManager::new(
-        num_birds,
+        DEFAULT_NUM_BIRDS,
         min_bounds,
         max_bounds,
         force_threads,
@@ -197,13 +226,7 @@ fn run_interactive_mode(
     let mut simulation_time = 0.0;
     let mut render_time = 0.0;
 
-    //* Camera position (THIS MIGHT CHANGE IN FUTURE IF I WANT TO BE FANCY) */
-    let cam_x = 0.0;
-    let cam_y = 0.0;
-    let cam_z = 120.0;
-
-    //* Report performance every 5 seconds */
-    let report_interval = std::time::Duration::from_secs(5);
+    let report_interval = std::time::Duration::from_secs(REPORT_INTERVAL_SECS);
     let mut last_report = Instant::now();
 
     event_loop.run(move |event, _, control_flow| {
@@ -260,20 +283,20 @@ fn run_interactive_mode(
 
                 // Render scene
                 let mut target = display.draw();
-                target.clear_color_and_depth((0.1, 0.1, 0.15, 1.0), 1.0);
+                target.clear_color_and_depth(BACKGROUND_COLOR, 1.0);
 
-                let eye = Point3::new(cam_x, cam_y, cam_z);
-                let target_point = Point3::new(0.0, 0.0, 0.0);
-                let up = Vector3::new(0.0, 1.0, 0.0);
+                let eye = Point3::new(CAMERA_POSITION.x, CAMERA_POSITION.y, CAMERA_POSITION.z);
+                let target_point = Point3::new(CAMERA_TARGET.x, CAMERA_TARGET.y, CAMERA_TARGET.z);
+                let up = CAMERA_UP;
                 let view_matrix: [[f32; 4]; 4] =
                     *Matrix4::look_at_rh(&eye, &target_point, &up).as_ref();
 
                 let perspective = Perspective3::new(
                     display.get_framebuffer_dimensions().0 as f32
                         / display.get_framebuffer_dimensions().1 as f32,
-                    std::f32::consts::FRAC_PI_4,
-                    0.1,
-                    1000.0,
+                    CAMERA_FOV,
+                    CAMERA_NEAR,
+                    CAMERA_FAR,
                 );
                 let projection_matrix: [[f32; 4]; 4] = *perspective.as_matrix().as_ref();
 
@@ -282,9 +305,13 @@ fn run_interactive_mode(
                     let pos_y = bird.position.y;
                     let pos_z = bird.position.z;
 
-                    let look_dir =
-                        Vector3::new(cam_x - pos_x, cam_y - pos_y, cam_z - pos_z).normalize();
-                    let up = Vector3::new(0.0, 1.0, 0.0);
+                    let look_dir = Vector3::new(
+                        CAMERA_POSITION.x - pos_x,
+                        CAMERA_POSITION.y - pos_y,
+                        CAMERA_POSITION.z - pos_z,
+                    )
+                    .normalize();
+                    let up = CAMERA_UP;
                     let right = up.cross(&look_dir).normalize();
                     let adjusted_up = look_dir.cross(&right).normalize();
 
@@ -296,19 +323,14 @@ fn run_interactive_mode(
                     ];
 
                     let dominant_force = flock.get_dominant_force(i);
-                    let bird_color = match dominant_force {
-                        0 => [0.9f32, 0.2f32, 0.2f32],
-                        1 => [0.2f32, 0.9f32, 0.2f32],
-                        2 => [0.2f32, 0.2f32, 0.9f32],
-                        _ => [0.7f32, 0.7f32, 0.7f32],
-                    };
+                    let bird_color = BIRD_COLORS[dominant_force.min(3)];
 
                     let uniforms = uniform! {
                         model: model_matrix,
                         view: view_matrix,
                         projection: projection_matrix,
                         bird_color: bird_color,
-                        camera_pos: [cam_x, cam_y, cam_z],
+                        camera_pos: [CAMERA_POSITION.x, CAMERA_POSITION.y, CAMERA_POSITION.z],
                     };
 
                     target
@@ -336,7 +358,7 @@ fn run_interactive_mode(
 
                 fps_counter += 1;
 
-                //* Report FPS every 5 seconds */
+                //* Report FPS every interval */
                 if last_report.elapsed() >= report_interval {
                     let current_fps = fps_counter as f32 / fps_timer.elapsed().as_secs_f32();
                     fps_history.push(current_fps);
