@@ -4,8 +4,6 @@ use scoped_threadpool::Pool;
 use std::time::{Duration, Instant};
 
 const CELL_SIZE: f32 = 30.0;
-const NUM_FORCE_THREADS: usize = 4;
-const NUM_UPDATE_THREADS: usize = 4;
 const EPSILON: f32 = 1e-6;
 const SEPARATION_RADIUS_FACTOR: f32 = 0.3;
 
@@ -189,6 +187,8 @@ pub struct FlockManager {
     spatial_grid: SpatialGrid,
     force_pool: Pool,
     update_pool: Pool,
+    force_thread_count: usize,
+    update_thread_count: usize,
     pub performance: PerformanceMetrics,
 }
 
@@ -219,6 +219,8 @@ impl FlockManager {
             spatial_grid: SpatialGrid::new(&min_bounds, &max_bounds),
             force_pool: Pool::new(force_threads as u32),
             update_pool: Pool::new(update_threads as u32),
+            force_thread_count: force_threads,
+            update_thread_count: update_threads,
             performance: PerformanceMetrics::new(),
         }
     }
@@ -375,10 +377,13 @@ impl FlockManager {
         let alignment_weight = self.alignment_weight;
         let cohesion_weight = self.cohesion_weight;
 
+        // Use force_thread_count instead of NUM_FORCE_THREADS
         let mut thread_forces: Vec<Vec<(usize, Vector3<f32>, Vector3<f32>, Vector3<f32>, usize)>> =
-            vec![Vec::new(); NUM_FORCE_THREADS];
+            vec![Vec::new(); self.force_thread_count];
 
-        let chunk_size = (self.current_birds.len() + NUM_FORCE_THREADS - 1) / NUM_FORCE_THREADS;
+        // Use force_thread_count instead of NUM_FORCE_THREADS
+        let chunk_size =
+            (self.current_birds.len() + self.force_thread_count - 1) / self.force_thread_count;
 
         self.force_pool.scoped(|scope| {
             for (chunk_idx, thread_result) in thread_forces.iter_mut().enumerate() {
@@ -437,7 +442,9 @@ impl FlockManager {
         let next_birds_len = self.next_birds.len();
         let min_bounds = self.min_bounds;
         let max_bounds = self.max_bounds;
-        let chunk_size = (next_birds_len + NUM_UPDATE_THREADS - 1) / NUM_UPDATE_THREADS;
+
+        // Use update_thread_count instead of NUM_UPDATE_THREADS
+        let chunk_size = (next_birds_len + self.update_thread_count - 1) / self.update_thread_count;
 
         // Update positions in parallel
         {
