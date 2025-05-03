@@ -1,5 +1,7 @@
 # Rust Flocking Simulator
 
+![Birds Flying All Pretty](prettybirds.png)
+
 This simulator demonstrates bird flocking behavior implemented in Rust using parallel processing.
 
 When running the visual simulation, bird colour dictates what their strongest force is:
