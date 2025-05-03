@@ -1,6 +1,7 @@
 use crate::bird::Bird;
 use nalgebra::Vector3;
 use scoped_threadpool::Pool;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 const CELL_SIZE: f32 = 30.0;
@@ -69,27 +70,30 @@ impl PerformanceMetrics {
 
 struct SpatialGrid {
     cells: Vec<Vec<usize>>,
-    grid_dim: usize,
+    dim_x: usize,
+    dim_y: usize,
+    dim_z: usize,
     min_bounds: Vector3<f32>,
     cell_size: f32,
 }
 
 impl SpatialGrid {
     fn new(min_bounds: &Vector3<f32>, max_bounds: &Vector3<f32>) -> Self {
-        let size_x = max_bounds.x - min_bounds.x;
-        let size_y = max_bounds.y - min_bounds.y;
-        let size_z = max_bounds.z - min_bounds.z;
-        let max_size = size_x.max(size_y).max(size_z);
-        let grid_dim = (max_size / CELL_SIZE).ceil() as usize + 1;
+        let dim_x = ((max_bounds.x - min_bounds.x) / CELL_SIZE).ceil() as usize + 1;
+        let dim_y = ((max_bounds.y - min_bounds.y) / CELL_SIZE).ceil() as usize + 1;
+        let dim_z = ((max_bounds.z - min_bounds.z) / CELL_SIZE).ceil() as usize + 1;
+        let total_cells = dim_x * dim_y * dim_z;
 
-        let mut cells = Vec::with_capacity(grid_dim * grid_dim * grid_dim);
-        for _ in 0..(grid_dim * grid_dim * grid_dim) {
+        let mut cells = Vec::with_capacity(total_cells);
+        for _ in 0..total_cells {
             cells.push(Vec::new());
         }
 
         SpatialGrid {
             cells,
-            grid_dim,
+            dim_x,
+            dim_y,
+            dim_z,
             min_bounds: *min_bounds,
             cell_size: CELL_SIZE,
         }
@@ -105,45 +109,45 @@ impl SpatialGrid {
         let x_cell = ((position.x - self.min_bounds.x) / self.cell_size)
             .floor()
             .max(0.0)
-            .min((self.grid_dim - 1) as f32) as usize;
+            .min((self.dim_x - 1) as f32) as usize;
         let y_cell = ((position.y - self.min_bounds.y) / self.cell_size)
             .floor()
             .max(0.0)
-            .min((self.grid_dim - 1) as f32) as usize;
+            .min((self.dim_y - 1) as f32) as usize;
         let z_cell = ((position.z - self.min_bounds.z) / self.cell_size)
             .floor()
             .max(0.0)
-            .min((self.grid_dim - 1) as f32) as usize;
+            .min((self.dim_z - 1) as f32) as usize;
         (x_cell, y_cell, z_cell)
+    }
+
+    fn get_cell_index(&self, x: usize, y: usize, z: usize) -> usize {
+        x + y * self.dim_x + z * (self.dim_x * self.dim_y)
     }
 
     fn get_overlapping_cells(&self, bird: &Bird) -> Vec<(usize, usize, usize)> {
         let perception_radius = bird.perception_radius;
 
-        // Create a position at the minimum corner of the bird's perception radius
         let min_pos = Vector3::new(
             bird.position.x - perception_radius,
             bird.position.y - perception_radius,
             bird.position.z - perception_radius,
         );
 
-        // Create a position at the maximum corner of the bird's perception radius
         let max_pos = Vector3::new(
             bird.position.x + perception_radius,
             bird.position.y + perception_radius,
             bird.position.z + perception_radius,
         );
 
-        // Get the cell coordinates for the min and max positions
         let (min_x, min_y, min_z) = self.get_cell_coords(&min_pos);
         let (max_x, max_y, max_z) = self.get_cell_coords(&max_pos);
 
-        // Generate all cell coordinates within this range
         let mut overlapping_cells = Vec::new();
         for x in min_x..=max_x {
             for y in min_y..=max_y {
                 for z in min_z..=max_z {
-                    if x < self.grid_dim && y < self.grid_dim && z < self.grid_dim {
+                    if x < self.dim_x && y < self.dim_y && z < self.dim_z {
                         overlapping_cells.push((x, y, z));
                     }
                 }
@@ -154,9 +158,8 @@ impl SpatialGrid {
     }
 
     fn add_bird(&mut self, bird_idx: usize, bird: &Bird) {
-        // Add bird to all cells its perception radius overlaps
         for (x_cell, y_cell, z_cell) in self.get_overlapping_cells(bird) {
-            let cell_idx = z_cell * self.grid_dim * self.grid_dim + y_cell * self.grid_dim + x_cell;
+            let cell_idx = self.get_cell_index(x_cell, y_cell, z_cell);
             if cell_idx < self.cells.len() {
                 self.cells[cell_idx].push(bird_idx);
             }
@@ -165,7 +168,7 @@ impl SpatialGrid {
 
     fn get_neighbor_indices(&self, bird: &Bird) -> Vec<usize> {
         let (x_cell, y_cell, z_cell) = self.get_cell_coords(&bird.position);
-        let cell_idx = z_cell * self.grid_dim * self.grid_dim + y_cell * self.grid_dim + x_cell;
+        let cell_idx = self.get_cell_index(x_cell, y_cell, z_cell);
 
         if cell_idx < self.cells.len() {
             self.cells[cell_idx].clone()
@@ -176,7 +179,7 @@ impl SpatialGrid {
 }
 
 pub struct FlockManager {
-    pub current_birds: Vec<Bird>,
+    pub current_birds: Arc<Vec<Bird>>,
     pub next_birds: Vec<Bird>,
     pub min_bounds: Vector3<f32>,
     pub max_bounds: Vector3<f32>,
@@ -193,6 +196,7 @@ pub struct FlockManager {
 }
 
 impl FlockManager {
+    // Creates a new flock manager with the specified number of birds and thread counts
     pub fn new(
         num_birds: usize,
         min_bounds: Vector3<f32>,
@@ -200,12 +204,17 @@ impl FlockManager {
         force_threads: usize,
         update_threads: usize,
     ) -> Self {
-        let mut current_birds = Vec::with_capacity(num_birds);
+        // Create birds in next_birds first
+        let mut next_birds = Vec::with_capacity(num_birds);
         for _ in 0..num_birds {
-            current_birds.push(Bird::new(&min_bounds, &max_bounds));
+            next_birds.push(Bird::new(&min_bounds, &max_bounds));
         }
-        let next_birds = current_birds.clone();
-        let dominant_forces = vec![0; num_birds];
+
+        // Move birds into Arc without cloning
+        let current_birds = Arc::new(std::mem::take(&mut next_birds));
+
+        // Reserve capacity for next_birds for future use
+        next_birds = Vec::with_capacity(num_birds);
 
         FlockManager {
             current_birds,
@@ -215,7 +224,7 @@ impl FlockManager {
             separation_weight: 3.0,
             alignment_weight: 1.0,
             cohesion_weight: 0.5,
-            dominant_forces,
+            dominant_forces: vec![0; num_birds],
             spatial_grid: SpatialGrid::new(&min_bounds, &max_bounds),
             force_pool: Pool::new(force_threads as u32),
             update_pool: Pool::new(update_threads as u32),
@@ -225,13 +234,7 @@ impl FlockManager {
         }
     }
 
-    fn update_spatial_grid(&mut self) {
-        self.spatial_grid.clear();
-        for (idx, bird) in self.current_birds.iter().enumerate() {
-            self.spatial_grid.add_bird(idx, bird);
-        }
-    }
-
+    // Calculates the wrapped distance between two positions in a toroidal space
     fn calculate_wrapped_distance(
         pos1: &Vector3<f32>,
         pos2: &Vector3<f32>,
@@ -253,6 +256,7 @@ impl FlockManager {
         Vector3::new(dx_wrap, dy_wrap, dz_wrap)
     }
 
+    // Calculates separation, alignment and cohesion forces for a bird
     fn calculate_forces(
         bird_index: usize,
         birds: &[Bird],
@@ -265,7 +269,6 @@ impl FlockManager {
     ) -> (Vector3<f32>, Vector3<f32>, Vector3<f32>, usize) {
         let bird = &birds[bird_index];
 
-        // Calculate separation force
         let mut separation_force = Vector3::zeros();
         let mut average_velocity = Vector3::zeros();
         let mut cohesion_center = Vector3::zeros();
@@ -294,10 +297,8 @@ impl FlockManager {
             }
 
             if dist_sq < bird.perception_radius * bird.perception_radius {
-                // For alignment
                 average_velocity += other_bird.velocity;
 
-                // For cohesion - calculate the wrapped position of the other bird
                 let other_pos = bird.position - wrapped_diff;
                 cohesion_center += other_pos;
 
@@ -305,7 +306,6 @@ impl FlockManager {
             }
         }
 
-        // Finalize alignment force
         let alignment_force = if neighboring_birds_count > 0 {
             average_velocity /= neighboring_birds_count as f32;
             let mut force = average_velocity - bird.velocity;
@@ -318,7 +318,6 @@ impl FlockManager {
             Vector3::zeros()
         };
 
-        // Finalize cohesion force
         let cohesion_force = if neighboring_birds_count > 0 {
             cohesion_center /= neighboring_birds_count as f32;
             let desired_velocity = cohesion_center - bird.position;
@@ -332,12 +331,10 @@ impl FlockManager {
             Vector3::zeros()
         };
 
-        // Apply weights
         let sep_force = separation_force * separation_weight;
         let align_force = alignment_force * alignment_weight;
         let coh_force = cohesion_force * cohesion_weight;
 
-        // Determine dominant force
         let sep_mag = sep_force.magnitude();
         let align_mag = align_force.magnitude();
         let coh_mag = coh_force.magnitude();
@@ -353,13 +350,34 @@ impl FlockManager {
         (sep_force, align_force, coh_force, dominant_force)
     }
 
+    // Gets a reference to the current birds for rendering
+    pub fn get_birds(&self) -> &[Bird] {
+        &self.current_birds
+    }
+
+    // Gets the total number of birds in the simulation
+    pub fn get_bird_count(&self) -> usize {
+        self.current_birds.len()
+    }
+
+    // Gets the dominant force for a specific bird
+    pub fn get_dominant_force(&self, bird_index: usize) -> usize {
+        self.dominant_forces[bird_index]
+    }
+
+    // Updates the flock simulation by one timestep
     pub fn update(&mut self, dt: f32) {
         let start_time = Instant::now();
 
+        // Update spatial grid using current birds
         let grid_start = Instant::now();
-        self.update_spatial_grid();
+        self.spatial_grid.clear();
+        for (idx, bird) in self.current_birds.iter().enumerate() {
+            self.spatial_grid.add_bird(idx, bird);
+        }
         self.performance.grid_update_time += grid_start.elapsed();
 
+        // Force calculation
         let force_start = Instant::now();
 
         // Pre-collect all neighbor indices
@@ -369,61 +387,62 @@ impl FlockManager {
             .map(|bird| self.spatial_grid.get_neighbor_indices(bird))
             .collect();
 
-        // Create thread-safe copies of shared data
-        let birds = self.current_birds.clone();
-        let min_bounds = self.min_bounds;
-        let max_bounds = self.max_bounds;
-        let separation_weight = self.separation_weight;
-        let alignment_weight = self.alignment_weight;
-        let cohesion_weight = self.cohesion_weight;
+        // Prepare thread local storage for results
+        let birds_count = self.current_birds.len();
+        let mut thread_results = vec![Vec::new(); self.force_thread_count];
 
-        // Use force_thread_count instead of NUM_FORCE_THREADS
-        let mut thread_forces: Vec<Vec<(usize, Vector3<f32>, Vector3<f32>, Vector3<f32>, usize)>> =
-            vec![Vec::new(); self.force_thread_count];
+        // Scope all Arc references to ensure they're dropped before buffer swap
+        {
+            // Copy configuration data that will be shared with threads
+            let min_bounds = self.min_bounds;
+            let max_bounds = self.max_bounds;
+            let separation_weight = self.separation_weight;
+            let alignment_weight = self.alignment_weight;
+            let cohesion_weight = self.cohesion_weight;
+            let thread_count = self.force_thread_count;
+            let birds_arc = Arc::clone(&self.current_birds);
+            let birds_with_neighbors_arc = Arc::new(birds_with_neighbors);
+            let chunk_size = (birds_count + thread_count - 1) / thread_count;
 
-        // Use force_thread_count instead of NUM_FORCE_THREADS
-        let chunk_size =
-            (self.current_birds.len() + self.force_thread_count - 1) / self.force_thread_count;
+            // Process in parallel
+            self.force_pool.scoped(|scope| {
+                for (thread_idx, thread_result) in thread_results.iter_mut().enumerate() {
+                    let start_idx = thread_idx * chunk_size;
+                    let end_idx = (start_idx + chunk_size).min(birds_count);
 
-        self.force_pool.scoped(|scope| {
-            for (chunk_idx, thread_result) in thread_forces.iter_mut().enumerate() {
-                let start_idx = chunk_idx * chunk_size;
-                let end_idx = (start_idx + chunk_size).min(birds.len());
+                    let birds_ref = Arc::clone(&birds_arc);
+                    let neighbors_ref = Arc::clone(&birds_with_neighbors_arc);
 
-                // Create thread-local copies
-                let birds_copy = birds.clone();
-                let birds_with_neighbors_copy = birds_with_neighbors.clone();
-                let min_bounds_copy = min_bounds;
-                let max_bounds_copy = max_bounds;
-                let sep_weight_copy = separation_weight;
-                let align_weight_copy = alignment_weight;
-                let cohesion_weight_copy = cohesion_weight;
+                    let mut local_results = Vec::with_capacity(end_idx - start_idx);
 
-                scope.execute(move || {
-                    let mut local_results = Vec::new();
+                    scope.execute(move || {
+                        for bird_idx in start_idx..end_idx {
+                            // Calculate forces for this bird
+                            let (sep, align, coh, dominant) = Self::calculate_forces(
+                                bird_idx,
+                                &birds_ref,
+                                &neighbors_ref[bird_idx],
+                                &min_bounds,
+                                &max_bounds,
+                                separation_weight,
+                                alignment_weight,
+                                cohesion_weight,
+                            );
 
-                    for bird_idx in start_idx..end_idx {
-                        let (sep, align, coh, dominant) = Self::calculate_forces(
-                            bird_idx,
-                            &birds_copy,
-                            &birds_with_neighbors_copy[bird_idx],
-                            &min_bounds_copy,
-                            &max_bounds_copy,
-                            sep_weight_copy,
-                            align_weight_copy,
-                            cohesion_weight_copy,
-                        );
+                            // Store result for this bird
+                            local_results.push((bird_idx, sep, align, coh, dominant));
+                        }
 
-                        local_results.push((bird_idx, sep, align, coh, dominant));
-                    }
+                        *thread_result = local_results;
+                    });
+                }
+            });
+            // All Arc clones are dropped here when this scope ends
+        }
 
-                    *thread_result = local_results;
-                });
-            }
-        });
-
-        // Apply the forces to next_birds
-        for thread_result in &thread_forces {
+        // Apply forces to next_birds (sequential operation)
+        //TODO : Realistically, this should be parallelized too but for now, it's not worth the effort
+        for thread_result in &thread_results {
             for &(bird_idx, sep, align, coh, dominant) in thread_result {
                 if bird_idx < self.next_birds.len() {
                     self.next_birds[bird_idx] = self.current_birds[bird_idx];
@@ -437,42 +456,53 @@ impl FlockManager {
 
         self.performance.force_calculation_time += force_start.elapsed();
 
+        // Update positions in parallel
         let update_start = Instant::now();
 
+        // Prepare data for position updates
+        let update_thread_count = self.update_thread_count;
         let next_birds_len = self.next_birds.len();
         let min_bounds = self.min_bounds;
         let max_bounds = self.max_bounds;
+        let chunk_size = (next_birds_len + update_thread_count - 1) / update_thread_count;
 
-        // Use update_thread_count instead of NUM_UPDATE_THREADS
-        let chunk_size = (next_birds_len + self.update_thread_count - 1) / self.update_thread_count;
+        // Split next_birds into chunks and process in parallel
+        self.update_pool.scoped(|scope| {
+            for next_birds_chunk in self.next_birds.chunks_mut(chunk_size) {
+                let min_bounds_copy = min_bounds;
+                let max_bounds_copy = max_bounds;
 
-        // Update positions in parallel
-        {
-            let next_birds_slice = self.next_birds.as_mut_slice();
-
-            self.update_pool.scoped(|scope| {
-                for next_birds_chunk in next_birds_slice.chunks_mut(chunk_size) {
-                    let min_bounds_copy = min_bounds;
-                    let max_bounds_copy = max_bounds;
-
-                    scope.execute(move || {
-                        for bird in next_birds_chunk {
-                            bird.update(dt);
-                            bird.apply_boundaries(&min_bounds_copy, &max_bounds_copy);
-                        }
-                    });
-                }
-            });
-        }
+                scope.execute(move || {
+                    for bird in next_birds_chunk {
+                        bird.update(dt);
+                        bird.apply_boundaries(&min_bounds_copy, &max_bounds_copy);
+                    }
+                });
+            }
+        });
 
         self.performance.position_update_time += update_start.elapsed();
 
-        std::mem::swap(&mut self.current_birds, &mut self.next_birds);
+        // Swap without cloning using mem::replace
+        let old_birds = std::mem::replace(
+            &mut self.current_birds,
+            Arc::new(std::mem::take(&mut self.next_birds)),
+        );
+
+        // Try to reclaim the old buffer
+        if let Ok(birds) = Arc::try_unwrap(old_birds) {
+            self.next_birds = birds;
+        } else {
+            // If we can't unwrap (other references exist), create a new buffer
+            // This should be rare in practice
+            self.next_birds = Vec::with_capacity(birds_count);
+        }
 
         self.performance.steps_completed += 1;
         self.performance.total_time += start_time.elapsed();
     }
 
+    // Runs a benchmark for the specified number of steps
     pub fn run_benchmark(&mut self, steps: usize, dt: f32) {
         self.performance.reset();
         println!("Running benchmark for {} steps...", steps);
@@ -490,17 +520,5 @@ impl FlockManager {
         }
 
         self.performance.report();
-    }
-
-    pub fn get_dominant_force(&self, bird_index: usize) -> usize {
-        self.dominant_forces[bird_index]
-    }
-
-    pub fn get_birds(&self) -> &Vec<Bird> {
-        &self.current_birds
-    }
-
-    pub fn get_bird_count(&self) -> usize {
-        self.current_birds.len()
     }
 }
