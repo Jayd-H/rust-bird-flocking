@@ -391,6 +391,14 @@ impl FlockManager {
         let birds_count = self.current_birds.len();
         let mut thread_results = vec![Vec::new(); self.force_thread_count];
 
+        // Ensure next_birds is the right size
+        if self.next_birds.len() != birds_count {
+            self.next_birds = Vec::with_capacity(birds_count);
+            self.next_birds.resize_with(birds_count, || {
+                Bird::new(&self.min_bounds, &self.max_bounds)
+            });
+        }
+
         // Scope all Arc references to ensure they're dropped before buffer swap
         {
             // Copy configuration data that will be shared with threads
