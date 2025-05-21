@@ -1,6 +1,14 @@
 use nalgebra::Vector3;
 use rand::Rng;
 
+//* BIRD CONFIGS!! */
+pub const MAX_SPEED: f32 = 10.0;
+pub const MAX_FORCE: f32 = 2.0;
+pub const PERCEPTION_RADIUS: f32 = 15.0;
+
+pub const INITIAL_VELOCITY_RANGE: f32 = 10.0;
+pub const INITIAL_VELOCITY_OFFSET: f32 = 1.0;
+
 #[derive(Debug, Copy, Clone)]
 pub struct Bird {
     pub position: Vector3<f32>,
@@ -28,18 +36,17 @@ impl Bird {
             rng.gen::<f32>() * 2.0 - 1.0,
         )
         .normalize()
-            * (rng.gen::<f32>() * 1.5 + 0.5);
+            * (rng.gen::<f32>() * INITIAL_VELOCITY_RANGE + INITIAL_VELOCITY_OFFSET);
 
         Self {
             position,
             velocity,
             acceleration: Vector3::zeros(),
-            max_speed: 3.0,
-            max_force: 0.1,
-            perception_radius: 15.0,
+            max_speed: MAX_SPEED,
+            max_force: MAX_FORCE,
+            perception_radius: PERCEPTION_RADIUS,
         }
     }
-
     // Updates the birds velocity and position based on its acceleration
     pub fn update(&mut self, dt: f32) {
         self.velocity += self.acceleration * dt;
