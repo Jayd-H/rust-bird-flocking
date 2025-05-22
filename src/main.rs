@@ -20,6 +20,7 @@ const SCALING_TEST_STEPS: usize = 500;
 const SIMULATION_TIMESTEP: f32 = 0.016; // 60 FPS equivalent
 
 // Default values
+// This could be a struct with ::Default imlementatiom
 const DEFAULT_NUM_BIRDS: usize = 1000;
 const DEFAULT_FORCE_THREADS: usize = 4;
 const DEFAULT_UPDATE_THREADS: usize = 4;
@@ -34,7 +35,7 @@ const BIRD_COLORS: [[f32; 3]; 4] = [
     [0.9, 0.2, 0.2], // Separation (red)
     [0.2, 0.9, 0.2], // Alignment (green)
     [0.2, 0.2, 0.9], // Cohesion (blue)
-    [0.7, 0.7, 0.7], // Default (gray)
+    [0.7, 0.7, 0.7], // Default (grey)
 ];
 const BACKGROUND_COLOR: (f32, f32, f32, f32) = (0.1, 0.1, 0.15, 1.0);
 
